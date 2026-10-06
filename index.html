@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Temple Runner 3D</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; overflow: hidden;
+    background: #000;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    height: 100%;
+    touch-action: none;
+  }
+  canvas { display: block; }
+
+  #hud {
+    position: absolute;
+    top: 16px; left: 0; right: 0;
+    display: flex;
+    justify-content: space-around;
+    color: #fff;
+    text-shadow: 2px 2px 4px rgba(0,0,0,0.7);
+    pointer-events: none;
+    font-size: 20px;
+    font-weight: bold;
+  }
+  #hud span { opacity: 0.85; font-weight: normal; font-size: 14px; display: block; }
+
+  #controls {
+    position: absolute;
+    bottom: 24px; left: 0; right: 0;
+    display: flex;
+    justify-content: center;
+    gap: 24px;
+  }
+  .ctrl-btn {
+    width: 60px; height: 60px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.15);
+    border: 2px solid rgba(255,255,255,0.4);
+    color: #fff;
+    font-size: 26px;
+    display: flex; align-items: center; justify-content: center;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: manipulation;
+  }
+  .ctrl-btn:active { background: rgba(255,255,255,0.35); }
+
+  #overlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0,0,0,0.65);
+    color: #fff;
+    text-align: center;
+  }
+  #overlay h1 { font-size: 36px; margin-bottom: 4px; }
+  #overlay .stats { font-size: 16px; opacity: 0.85; margin: 6px 0; }
+  #overlay .stats b { font-size: 22px; color: #ffd700; }
+  #overlay button {
+    margin-top: 22px;
+    padding: 14px 40px;
+    font-size: 18px;
+    font-weight: bold;
+    background: #ff6b35;
+    color: #fff;
+    border: none;
+    border-radius: 30px;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(255,107,53,0.4);
+  }
+  #overlay button:active { transform: scale(0.96); }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<div id="hud">
+  <div><span>Score</span><span id="scoreVal" style="font-size:20px;color:#fff;">0</span></div>
+  <div><span>Coins</span><span id="coinVal" style="font-size:20px;color:#ffd700;">0</span></div>
+</div>
+
+<div id="controls">
+  <div class="ctrl-btn" id="btnLeft">◀</div>
+  <div class="ctrl-btn" id="btnJump">▲</div>
+  <div class="ctrl-btn" id="btnRight">▶</div>
+</div>
+
+<div id="overlay">
+  <h1>Temple Runner 3D</h1>
+  <p style="opacity:0.8;max-width:300px;">Dash down the temple path, dodge the pillars, and grab coins. Arrow keys, swipe, or the on-screen buttons.</p>
+  <div class="stats hidden" id="finalStats">
+    Total Distance: <b id="finalDistance">0</b> m<br>
+    Coins Gathered: <b id="finalCoins">0</b>
+  </div>
+  <button id="startBtn">Start Run</button>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(() => {
+  const scoreEl = document.getElementById('scoreVal');
+  const coinEl = document.getElementById('coinVal');
+  const overlay = document.getElementById('overlay');
+  const startBtn = document.getElementById('startBtn');
+  const finalStats = document.getElementById('finalStats');
+  const finalDistance = document.getElementById('finalDistance');
+  const finalCoins = document.getElementById('finalCoins');
+  const title = document.querySelector('#overlay h1');
+  const subtitle = document.querySelector('#overlay p');
+
+  const scene = new THREE.Scene();
+  scene.fog = new THREE.Fog(0x0d0d1a, 15, 70);
+  scene.background = new THREE.Color(0x0d0d1a);
+
+  const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 200);
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  document.body.appendChild(renderer.domElement);
+
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  scene.add(new THREE.AmbientLight(0x888899, 1.2));
+  const dirLight = new THREE.DirectionalLight(0xffddaa, 1.1);
+  dirLight.position.set(5, 12, 8);
+  scene.add(dirLight);
+
+  const LANES = [-2.4, 0, 2.4];
+  const GRAVITY = -0.03;
+  const JUMP_VELOCITY = 0.42;
+  const SEGMENT_LENGTH = 6;
+  const SEGMENTS_VISIBLE = 14;
+
+  const player = new THREE.Group();
+  const bodyGeo = new THREE.BoxGeometry(0.8, 1.2, 0.6);
+  const bodyMat = new THREE.MeshStandardMaterial({ color: 0xff6b35 });
+  const body = new THREE.Mesh(bodyGeo, bodyMat);
+  body.position.y = 0.9;
+  player.add(body);
+
+  const headGeo = new THREE.SphereGeometry(0.32, 16, 16);
+  const headMat = new THREE.MeshStandardMaterial({ color: 0xffd7b3 });
+  const head = new THREE.Mesh(headGeo, headMat);
+  head.position.y = 1.75;
+  player.add(head);
+
+  scene.add(player);
+
+  let laneIndex = 1;
+  let targetX = LANES[laneIndex];
+  let velocityY = 0;
+  let grounded = true;
+  let sliding = false;
+  let slideTimer = 0;
+
+  const groundSegments = [];
+  const groundMat = new THREE.MeshStandardMaterial({ color: 0x6b4f31 });
+  const stripeMat = new THREE.MeshStandardMaterial({ color: 0x8a6a44 });
+
+  function createGroundSegment(zPos) {
+    const group = new THREE.Group();
+    const base = new THREE.Mesh(new THREE.BoxGeometry(8, 0.4, SEGMENT_LENGTH), groundMat);
+    base.position.set(0, -0.2, zPos);
+    group.add(base);
+
+    for (const lx of [-1.2, 1.2]) {
+      const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.42, SEGMENT_LENGTH), stripeMat);
+      stripe.position.set(lx, -0.19, zPos);
+      group.add(stripe);
+    }
+
+    for (const side of [-1, 1]) {
+      const pillar = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.3, 0.35, 4, 8),
+        new THREE.MeshStandardMaterial({ color: 0x4a3b2a })
+      );
+      pillar.position.set(side * 4.2, 1.8, zPos);
+      group.add(pillar);
+    }
+
+    scene.add(group);
+    return { group, z: zPos };
+  }
+
+  for (let i = 0; i < SEGMENTS_VISIBLE; i++) {
+    groundSegments.push(createGroundSegment(-i * SEGMENT_LENGTH));
+  }
+
+  const obstacles = [];
+  const coins = [];
+  const obstacleMat = new THREE.MeshStandardMaterial({ color: 0x8b3a3a });
+  const barMat = new THREE.MeshStandardMaterial({ color: 0x5a5a8a });
+  const coinMat = new THREE.MeshStandardMaterial({ color: 0xffd700, emissive: 0x664400 });
+
+  function spawnObstacle(z) {
+    const lane = LANES[Math.floor(Math.random() * 3)];
+    const type = Math.random() < 0.5 ? 'block' : 'bar';
+    let mesh;
+    if (type === 'block') {
+      mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1.4, 0.6), obstacleMat);
+      mesh.position.set(lane, 0.7, z);
+    } else {
+      mesh = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.4, 0.6), barMat);
+      mesh.position.set(lane, 1.5, z);
+    }
+    scene.add(mesh);
+    obstacles.push({ mesh, lane, type, passed: false });
+  }
+
+  function spawnCoinRow(z) {
+    const lane = LANES[Math.floor(Math.random() * 3)];
+    for (let i = 0; i < 4; i++) {
+      const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.25, 12, 12), coinMat);
+      mesh.position.set(lane, 1.0, z - i * 1.6);
+      scene.add(mesh);
+      coins.push({ mesh, lane, collected: false });
+    }
+  }
+
+  let state = 'menu';
+  let distance = 0;
+  let coinCount = 0;
+  let speed = 0.22;
+  let nextSpawnZ = -20;
+
+  function resetGame() {
+    for (const o of obstacles) scene.remove(o.mesh);
+    for (const c of coins) scene.remove(c.mesh);
+    obstacles.length = 0;
+    coins.length = 0;
+
+    for (const seg of groundSegments) scene.remove(seg.group);
+    groundSegments.length = 0;
+    for (let i = 0; i < SEGMENTS_VISIBLE; i++) {
+      groundSegments.push(createGroundSegment(-i * SEGMENT_LENGTH));
+    }
+
+    distance = 0;
+    coinCount = 0;
+    speed = 0.22;
+    nextSpawnZ = -20;
+    laneIndex = 1;
+    targetX = LANES[laneIndex];
+    velocityY = 0;
+    grounded = true;
+    sliding = false;
+    slideTimer = 0;
+    player.position.set(targetX, 0, 0);
+    body.scale.set(1, 1, 1);
+    scoreEl.textContent = '0';
+    coinEl.textContent = '0';
+  }
+
+  function moveLeft() {
+    if (state !== 'playing') return;
+    laneIndex = Math.max(0, laneIndex - 1);
+    targetX = LANES[laneIndex];
+  }
+  function moveRight() {
+    if (state !== 'playing') return;
+    laneIndex = Math.min(2, laneIndex + 1);
+    targetX = LANES[laneIndex];
+  }
+  function jump() {
+    if (state !== 'playing') return;
+    if (grounded && !sliding) {
+      velocityY = JUMP_VELOCITY;
+      grounded = false;
+    }
+  }
+  function slide() {
+    if (state !== 'playing') return;
+    if (grounded && !sliding) {
+      sliding = true;
+      slideTimer = 35;
+      body.scale.y = 0.5;
+      body.position.y = 0.55;
+      head.position.y = 1.1;
+    }
+  }
+
+  window.addEventListener('keydown', (e) => {
+    switch (e.key) {
+      case 'ArrowLeft': e.preventDefault(); moveLeft(); break;
+      case 'ArrowRight': e.preventDefault(); moveRight(); break;
+      case 'ArrowUp': case ' ': e.preventDefault(); jump(); break;
+      case 'ArrowDown': e.preventDefault(); slide(); break;
+    }
+  });
+
+  document.getElementById('btnLeft').addEventListener('touchstart', (e) => { e.preventDefault(); moveLeft(); });
+  document.getElementById('btnRight').addEventListener('touchstart', (e) => { e.preventDefault(); moveRight(); });
+  document.getElementById('btnJump').addEventListener('touchstart', (e) => { e.preventDefault(); jump(); });
+  document.getElementById('btnLeft').addEventListener('click', moveLeft);
+  document.getElementById('btnRight').addEventListener('click', moveRight);
+  document.getElementById('btnJump').addEventListener('click', jump);
+
+  let touchStartX = 0, touchStartY = 0, touchStartTime = 0;
+  renderer.domElement.addEventListener('touchstart', (e) => {
+    const t = e.changedTouches[0];
+    touchStartX = t.clientX; touchStartY = t.clientY;
+    touchStartTime = Date.now();
+  }, { passive: true });
+  renderer.domElement.addEventListener('touchend', (e) => {
+    const t = e.changedTouches[0];
+    const dx = t.clientX - touchStartX;
+    const dy = t.clientY - touchStartY;
+    if (Date.now() - touchStartTime > 700) return;
+    if (Math.abs(dx) > Math.abs(dy)) {
+      if (Math.abs(dx) > 30) dx > 0 ? moveRight() : moveLeft();
+    } else {
+      if (dy < -30) jump();
+      else if (dy > 30) slide();
+    }
+  }, { passive: true });
+
+  startBtn.addEventListener('click', () => {
+    resetGame();
+    state = 'playing';
+    overlay.classList.add('hidden');
+  });
+
+  function gameOver() {
+    state = 'gameover';
+    title.textContent = 'GAME OVER';
+    subtitle.classList.add('hidden');
+    finalStats.classList.remove('hidden');
+    finalDistance.textContent = Math.floor(distance);
+    finalCoins.textContent = coinCount;
+    startBtn.textContent = 'Run Again';
+    overlay.classList.remove('hidden');
+  }
+
+  const clock = new THREE.Clock();
+
+  function update() {
+    const dt = Math.min(clock.getDelta(), 0.05) * 60;
+
+    distance += speed * dt * 0.5;
+    speed = Math.min(0.22 + distance / 3000, 0.5);
+    scoreEl.textContent = Math.floor(distance);
+
+    player.position.x += (targetX - player.position.x) * 0.25;
+
+    if (!grounded) {
+      velocityY += GRAVITY * dt;
+      player.position.y += velocityY * dt;
+      if (player.position.y <= 0) {
+        player.position.y = 0;
+        velocityY = 0;
+        grounded = true;
+      }
+    }
+
+    if (sliding) {
+      slideTimer -= dt;
+      if (slideTimer <= 0) {
+        sliding = false;
+        body.scale.y = 1;
+        body.position.y = 0.9;
+        head.position.y = 1.75;
+      }
+    }
+
+    for (const seg of groundSegments) {
+      seg.z += speed * dt;
+      seg.group.position.z = seg.z;
+    }
+    groundSegments.sort((a, b) => b.z - a.z);
+    const backSeg = groundSegments[groundSegments.length - 1];
+    if (backSeg.z > 10) {
+      const frontZ = groundSegments[0].z - SEGMENT_LENGTH;
+      backSeg.z = frontZ;
+      backSeg.group.position.z = frontZ;
+    }
+
+    for (const o of obstacles) o.mesh.position.z += speed * dt;
+    for (const c of coins) c.mesh.position.z += speed * dt;
+
+    nextSpawnZ += speed * dt;
+    if (nextSpawnZ > -8) {
+      const spawnAt = -55 - Math.random() * 10;
+      if (Math.random() < 0.7) spawnObstacle(spawnAt);
+      else spawnCoinRow(spawnAt);
+      nextSpawnZ = -20 - Math.random() * 10;
+    }
+
+    for (const o of obstacles) {
+      if (o.passed) continue;
+      if (o.mesh.position.z > -0.6 && o.mesh.position.z < 0.6) {
+        const sameLane = Math.abs(o.lane - player.position.x) < 0.9;
+        if (sameLane) {
+          const dodgedJump = o.type === 'block' && !grounded && player.position.y > 0.6;
+          const dodgedSlide = o.type === 'bar' && sliding;
+          if (!dodgedJump && !dodgedSlide) {
+            gameOver();
+            return;
+          }
+        }
+        o.passed = true;
+      }
+    }
+
+    for (const c of coins) {
+      if (c.collected) continue;
+      if (c.mesh.position.z > -0.7 && c.mesh.position.z < 0.7) {
+        const sameLane = Math.abs(c.lane - player.position.x) < 0.9;
+        if (sameLane) {
+          c.collected = true;
+          c.mesh.visible = false;
+          coinCount++;
+          coinEl.textContent = coinCount;
+        }
+      }
+    }
+
+    for (let i = obstacles.length - 1; i >= 0; i--) {
+      if (obstacles[i].mesh.position.z > 3) {
+        scene.remove(obstacles[i].mesh);
+        obstacles.splice(i, 1);
+      }
+    }
+    for (let i = coins.length - 1; i >= 0; i--) {
+      if (coins[i].mesh.position.z > 3) {
+        scene.remove(coins[i].mesh);
+        coins.splice(i, 1);
+      }
+    }
+
+    camera.position.set(player.position.x * 0.6, 2.6, 5.5);
+    camera.lookAt(player.position.x * 0.3, 1.0, -6);
+  }
+
+  function animate() {
+    requestAnimationFrame(animate);
+    if (state === 'playing') update();
+    renderer.render(scene, camera);
+  }
+
+  camera.position.set(0, 2.6, 5.5);
+  camera.lookAt(0, 1.0, -6);
+
+  animate();
+})();
+</script>
+
+</body>
+  </html>
